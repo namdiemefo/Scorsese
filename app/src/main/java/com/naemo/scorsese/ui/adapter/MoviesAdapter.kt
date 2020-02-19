@@ -11,12 +11,9 @@ import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
 import com.naemo.scorsese.R
 import com.naemo.scorsese.api.model.Movie
-import com.naemo.scorsese.db.FavoriteEntity
 import kotlinx.android.synthetic.main.movie_card.view.*
 
 class MoviesAdapter(private var context: Context, private var movieList: ArrayList<Movie>, private var itemClickListener: ItemClickListener) : RecyclerView.Adapter<MoviesAdapter.ViewHolder>() {
-
-    var allFaves: MutableList<FavoriteEntity>? = ArrayList()
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val view = LayoutInflater.from(parent.context).inflate(R.layout.movie_card, parent, false)
@@ -41,21 +38,6 @@ class MoviesAdapter(private var context: Context, private var movieList: ArrayLi
         Glide.with(context).load(thumbnail).into(holder.thumbNail)
 
         holder.movieFrame.setOnClickListener {itemClickListener.onItemClicked(id, originalTitle, thumbnail, releaseDate, overView, rating)}
-    }
-
-    fun setFavorites(favoriteEntity: MutableList<FavoriteEntity>) {
-        this.allFaves = favoriteEntity
-        notifyDataSetChanged()
-    }
-
-    fun setFaves(favoriteEntity: FavoriteEntity) {
-
-        notifyDataSetChanged()
-    }
-
-    fun setMovies(movie: ArrayList<Movie>) {
-        movieList = movie
-        notifyDataSetChanged()
     }
 
     class ViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {

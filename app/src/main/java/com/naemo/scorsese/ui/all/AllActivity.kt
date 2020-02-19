@@ -1,15 +1,18 @@
 package com.naemo.scorsese.ui.all
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
+import android.os.Parcelable
 import android.util.Log
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.widget.ProgressBar
 import android.widget.Toast
-import androidx.annotation.Nullable
-import androidx.lifecycle.Observer
 import androidx.recyclerview.widget.DefaultItemAnimator
 import androidx.recyclerview.widget.GridLayoutManager
 import com.naemo.scorsese.BR
@@ -18,24 +21,20 @@ import com.naemo.scorsese.R
 import com.naemo.scorsese.databinding.ActivityAllBinding
 import com.naemo.scorsese.api.model.Movie
 import com.naemo.scorsese.api.model.MovieResponse
-
-import com.naemo.scorsese.db.FavoriteEntity
-import com.naemo.scorsese.helper.Helper
+import com.naemo.scorsese.data.local.FavoriteDbHelper
 import com.naemo.scorsese.network.Client
-import com.naemo.scorsese.network.Service
 import com.naemo.scorsese.ui.adapter.MoviesAdapter
 import com.naemo.scorsese.ui.base.BaseActivity
 import com.naemo.scorsese.ui.detail.DetailActivity
 import kotlinx.android.synthetic.main.activity_all.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.Dispatchers.Main
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.Cache
-import okhttp3.OkHttpClient
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
 import java.lang.Exception
 import javax.inject.Inject
 
@@ -60,10 +59,13 @@ class AllActivity : BaseActivity<ActivityAllBinding, AllViewModel>(), AllNavigat
 
     var mBinder: ActivityAllBinding? = null
     var pd: ProgressBar? = null
-    private var movieList: ArrayList<Movie>? = null
+    private var movieList: ArrayList<Movie> = ArrayList()
     private var adapter: MoviesAdapter? = null
-   // private var favoriteDbHelper = FavoriteDbHelper(this)
-    private val cacheSize: Long = 10 * 1024 * 1024
+   private var favoriteDbHelper = FavoriteDbHelper(this)
+
+    private val LIST_STATE = "list_state"
+    private var savedRecyclerLayoutState: Parcelable? = null
+    private val BUNDLE_RECYCLER_LAYOUT = "recycler_layout"
 
     override fun getBindingVariable(): Int {
        return BR.viewModel
@@ -81,7 +83,35 @@ class AllActivity : BaseActivity<ActivityAllBinding, AllViewModel>(), AllNavigat
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_all)
         doBinding()
-        initializeViews()
+
+
+        if (savedInstanceState != null) {
+            movieList = savedInstanceState.getParcelableArrayList<Movie>(LIST_STATE) as ArrayList<Movie>
+            savedRecyclerLayoutState = savedInstanceState.getParcelable(BUNDLE_RECYCLER_LAYOUT)
+            displayData()
+        } else {
+           // initViews()
+            initializeViews()
+        }
+    }
+
+    private fun displayData() {
+        adapter = MoviesAdapter(this, movieList, this)
+        if (getActivity()!!.resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
+            recycler_view.layoutManager = GridLayoutManager(this, 2)
+        } else {
+            recycler_view.layoutManager = GridLayoutManager(this, 4)
+        }
+        recycler_view.itemAnimator = DefaultItemAnimator()
+        recycler_view.adapter = adapter
+        restoreLayoutManagerPosition()
+        adapter?.notifyDataSetChanged()
+    }
+
+    private fun restoreLayoutManagerPosition() {
+        if (savedRecyclerLayoutState != null) {
+            recycler_view.layoutManager?.onRestoreInstanceState(savedRecyclerLayoutState)
+        }
     }
 
     private fun doBinding() {
@@ -101,13 +131,41 @@ class AllActivity : BaseActivity<ActivityAllBinding, AllViewModel>(), AllNavigat
         }
     }
 
+   override fun onSaveInstanceState(savedInstanceState: Bundle) {
+        super.onSaveInstanceState(savedInstanceState)
+        savedInstanceState.putParcelableArrayList(LIST_STATE, movieList)
+        savedInstanceState.putParcelable(
+            BUNDLE_RECYCLER_LAYOUT,
+            recycler_view?.layoutManager?.onSaveInstanceState()
+        )
+    }
+
+    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
+        movieList = savedInstanceState.getParcelableArrayList<Movie>(LIST_STATE) as ArrayList<Movie>
+        savedRecyclerLayoutState = savedInstanceState.getParcelable(BUNDLE_RECYCLER_LAYOUT)
+        super.onRestoreInstanceState(savedInstanceState)
+    }
+
     private fun initViews() {
         pd = ProgressBar(this, null, android.R.attr.progressBarStyleLarge)
         pd?.visibility = View.VISIBLE
         loadMovies()
     }
 
+    fun getActivity(): Activity? {
+        var context: Context = this
+        while (context is ContextWrapper) {
+            if (context is Activity) {
+                return context
+            }
+            context = context.baseContext
+        }
+        return null
+
+    }
+
     private fun loadMovies() {
+
         try {
             if (BuildConfig.MOVIE_DB_API_TOKEN.isEmpty()) {
                 Toast.makeText(applicationContext, "No Api Key", Toast.LENGTH_SHORT).show()
@@ -115,43 +173,23 @@ class AllActivity : BaseActivity<ActivityAllBinding, AllViewModel>(), AllNavigat
                 return
             }
 
-           // val cal = Client()
-            val network = Helper()
-            val cache = Cache(cacheDir, cacheSize)
-            val okHttpClient = OkHttpClient.Builder()
-                .cache(cache)
-                .addInterceptor { chain ->
-                    var request = chain.request()
-                    if (!network.isNetworkConnected(this)) {
-                        val maxStale = 60 * 60 * 24 * 28
-                        request = request
-                            .newBuilder()
-                            .header("Cache-control", "public, only-if-cached, max stale $maxStale")
-                            .build()
-                    }
-                    chain.proceed(request)
-                }
-                .build()
-
-            val builder: Retrofit.Builder = Retrofit.Builder()
-                .baseUrl("http://api.themoviedb.org/3/")
-                .client(okHttpClient)
-                .addConverterFactory(GsonConverterFactory.create())
-
-            val retrofit: Retrofit = builder.build()
-            val apiService: Service = retrofit.create(Service::class.java)
-
-            val movieResponseCall: Call<MovieResponse> = apiService.getTopRatedMovies(BuildConfig.MOVIE_DB_API_TOKEN)
+           val cal = Client()
+            val movieResponseCall: Call<MovieResponse> = cal.getApi().getTopRatedMovies(BuildConfig.MOVIE_DB_API_TOKEN)
             movieResponseCall.enqueue(object : Callback<MovieResponse> {
 
                 override fun onResponse(call: Call<MovieResponse>, response: Response<MovieResponse>) {
                     val movies: ArrayList<Movie>? = response.body()?.result
+                    movies?.let { movieList.addAll(it) }
                     if (movies == null) {
                         pd?.visibility = View.GONE
                     }
                     val adapter = movies?.let { MoviesAdapter(application, it, this@AllActivity) }
                     recycler_view?.smoothScrollToPosition(0)
-                    recycler_view.layoutManager = GridLayoutManager(this@AllActivity, 2)
+                    if (getActivity()!!.resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
+                        recycler_view.layoutManager = GridLayoutManager(this@AllActivity, 2)
+                    } else {
+                        recycler_view.layoutManager = GridLayoutManager(this@AllActivity, 4)
+                    }
                     recycler_view.adapter = adapter
                     if (swipe_refresh.isRefreshing) {
                         swipe_refresh.isRefreshing = false
@@ -198,54 +236,28 @@ class AllActivity : BaseActivity<ActivityAllBinding, AllViewModel>(), AllNavigat
     }
 
     private fun loadFavoriteMovies() {
-        //movieList = favoriteDbHelper.getAllFavorites()
-       // val allViewModel = AllViewModel(application)
-        val mList = allViewModel?.loadFav()
-        if (mList == null) {
+
+        CoroutineScope(IO).launch {
+            movieList.addAll(favoriteDbHelper.getAllFavorites())
+            loadInBg()
+        }
+        movieList = ArrayList()
+        if (movieList.isEmpty()) {
             Toast.makeText(this, "you have no favorite movies", Toast.LENGTH_SHORT).show()
         }
-        allViewModel?.loadFav()?.observe(this, object : Observer<MutableList<FavoriteEntity>> {
-           override fun onChanged(@Nullable imageEntries: MutableList<FavoriteEntity>) {
-                val movies = java.util.ArrayList<Movie>()
-                for (entry in imageEntries) {
-                    val movie = Movie()
-                    movie.id = entry.movieId
-                    movie.overview = entry.overview
-                    movie.originalTitle = entry.title
-                    movie.posterPath = entry.posterPath
-                    movie.voteAverage = entry.rating
-
-                    movies.add(movie)
-                }
-
-                adapter?.setMovies(movies)
-            }
-        })
-       /* allViewModel.loadFav()?.observe(this, Observer<MutableList<FavoriteEntity>> {
-            val movies: MutableList<Movie> = ArrayList()
-         *//*   for (entity: FavoriteEntity in it) {
-                var movie = Movie()
-                movie.id = entity.id
-                movie.releaseDate = entity.releaseDate
-                movie.overview = entity.overview
-                movie.posterPath = entity.posterPath
-                movie.voteAverage = entity.rating.toDouble()
-                movies.add(movie)
-            }
-            adapter?.setMovies(movies as ArrayList<Movie>)*//*
+        adapter = MoviesAdapter(this, movieList, this)
+        if (getActivity()!!.resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
             recycler_view.layoutManager = GridLayoutManager(this, 2)
-            recycler_view.itemAnimator = DefaultItemAnimator()
-            recycler_view.adapter = adapter
-            adapter?.setFavorites(it)
-           // adapter = MoviesAdapter(this, arrayOf(it), this)
-        })*/
-        //adapter = MoviesAdapter(this, this.movieList!!, this)
+        } else {
+            recycler_view.layoutManager = GridLayoutManager(this, 4)
+        }
+        recycler_view.itemAnimator = DefaultItemAnimator()
+        recycler_view.adapter = adapter
 
-        //adapter!!.notifyDataSetChanged()
-      /*  CoroutineScope(Dispatchers.IO).launch {
-            movieList?.addAll(favoriteDbHelper.getAllFavorites())
-                 notifyUi()
-        }*/
+    }
+
+    private suspend fun loadInBg() {
+        notifyUi()
     }
 
     private suspend fun notifyUi() {
