@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Scorsese</string>
+    <string name="movie_details">Movie Details</string>
+    <string name="action_settings">Favorite</string>
+    <string name="popular">Popular</string>
+</resources>
